@@ -1,0 +1,39 @@
+# differenziata-bot configuration.
+#
+# Copy to config.toml:  cp config.example.toml config.toml
+#
+# This file holds settings only. The bot token and chat id live in .env, next to
+# this file:  cp .env.example .env  (see bin/setup, which does both)
+#
+# Credentials are resolved config.toml -> .env -> exported environment, so
+# TELEGRAM_TOKEN=... in the environment overrides .env for a single run.
+
+[telegram]
+# api_base = "https://api.telegram.org"
+# timeout_seconds = 20
+# retries = 2
+
+[reminders]
+# How early to warn, in days before the pickup day.
+# A single number applies to every entry in `times`; a list sends each time on
+# each listed day, e.g. days_before = [2, 1] gives a two-day heads-up too.
+days_before = 1
+# How many reminders you get and how often: one message per time of day, all on
+# the day(s) picked by days_before. Default: late morning, afternoon, evening.
+times = ["11:30", "16:00", "20:30"]
+# How long a reminder stays valid after its due time. Covers a cron tick that
+# lands late, or a machine that was off when the reminder was due.
+grace_minutes = 120
+
+[calendar]
+# The trash/pickup calendar, one row per kind of trash.
+csv = "schedule.csv"
+
+[runtime]
+# Reminders already delivered, so a repeated cron run stays silent.
+state_file = "var/state.tsv"
+
+[cron]
+# Cron expression used by bin/cron.sh when installing the job. Run
+# `bin/cron.sh refresh` after changing it. Five fields, local time.
+schedule = "*/30 * * * *"

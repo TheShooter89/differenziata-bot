@@ -1,0 +1,25 @@
+# Trash pickup calendar. One row per kind of trash.
+#
+# name          what the row is about
+# emoji         optional, shown in the Telegram message
+# weekday       monday..sunday (or 1..7)
+# every_n_weeks 1 = every week, 2 = every other week
+# anchor_date  a date on that weekday that IS a pickup; it fixes the phase of
+#              the every_n_weeks cycle. Changing it shifts the whole cycle.
+# notes         ignored by the bot, free for your own bookkeeping
+#
+# These days are a plausible monday-to-friday spread, not your municipality's
+# real calendar: edit them to match. Run `make list` afterwards to check.
+#
+# Rules of thumb when editing:
+#   - weekday must be the day the truck actually comes for that bin.
+#   - anchor_date must fall on that same weekday and must be a real pickup.
+#     It is only the phase marker for every_n_weeks, so any past date works.
+#   - for every_n_weeks = 2, pick an anchor matching your municipality's first
+#     collection, then the alternating weeks follow automatically.
+name,emoji,weekday,every_n_weeks,anchor_date,notes
+umido,💩️,monday,1,2026-01-05,
+carta,📄,tuesday,1,2026-01-06,
+vetro,🍾,wednesday,2,2026-01-07,ogni due settimane
+plastica e lattine,🧴,thursday,1,2026-01-01,
+secco / non riciclabile,🗑,friday,1,2026-01-02,

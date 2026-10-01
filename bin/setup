@@ -1,0 +1,35 @@
+#!/bin/sh
+# Entry point for `make setup`: copies the example config and prepares var/.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+cd "$ROOT"
+
+if [ -e config.toml ]; then
+  echo "config.toml already exists, leaving it alone"
+else
+  cp config.example.toml config.toml
+  chmod 600 config.toml
+  echo "created config.toml (mode 600)"
+fi
+
+if [ -e .env ]; then
+  echo ".env already exists, leaving it alone"
+else
+  cp .env.example .env
+  chmod 600 .env
+  echo "created .env (mode 600)"
+fi
+
+mkdir -p var
+chmod 700 var
+
+cat <<'EOF'
+
+Next:
+  1. put your bot token and chat id in .env
+  2. check the trash days in schedule.csv
+  3. ./bin/differenziata-bot --dry-run --days 21 --list     # preview the calendar
+  4. ./bin/differenziata-bot --test-send                   # send one test message
+  5. ./bin/cron.sh add && ./bin/cron.sh start              # install and enable cron
+EOF

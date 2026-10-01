@@ -1,0 +1,39 @@
+#!/bin/sh
+# Cron-safe entry point: absolute paths, predictable PATH, no dependency on the
+# login environment, and a lock so a slow run can never overlap the next tick.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+export DIFFERENZIATA_ROOT="$ROOT"
+export LUA_PATH="$ROOT/src/?.lua;;"
+export PATH="/usr/local/bin:/usr/bin:/bin"
+
+mkdir -p "$ROOT/var"
+
+LUA=${LUA:-}
+if [ -z "$LUA" ]; then
+  for candidate in lua lua5.4 lua5.3 lua5.1 luajit; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      LUA=$candidate
+      break
+    fi
+  done
+fi
+if [ -z "$LUA" ]; then
+  echo "differenziata-bot: no lua interpreter found (set LUA=/path/to/lua)" >&2
+  exit 1
+fi
+
+LOCK="$ROOT/var/bot.lock"
+if command -v flock >/dev/null 2>&1; then
+  # 75 is flock's own "would block" marker, so a normal Lua failure keeps its
+  # own exit code instead of being mistaken for a skipped run.
+  flock -n -E 75 "$LOCK" "$LUA" "$ROOT/src/init.lua" "$@" || status=$?
+  if [ "${status:-0}" -eq 75 ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') another run is in progress, skipping" >&2
+    exit 0
+  fi
+  exit "${status:-0}"
+fi
+
+exec "$LUA" "$ROOT/src/init.lua" "$@"

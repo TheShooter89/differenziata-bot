@@ -1,0 +1,16 @@
+# Lua
+*.rock
+*.src.rock
+
+# Secrets and local state. .env holds the bot token.
+.env
+.env.bak
+config.toml
+config.toml.bak
+var/*
+!var/.gitkeep
+
+# Editors and OS noise
+*.swp
+*~
+.DS_Store
