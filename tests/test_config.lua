@@ -159,6 +159,22 @@ schedule = "*/30 * * *"
       [[
 [telegram]
 token = "1:a"
+chat_id = "abc"
+]], "TELEGRAM_CHAT_ID must be a number",
+    },
+    {
+      [[
+[telegram]
+token = "1:a"
+chat_id = "1"
+[commands]
+poll_timeout_seconds = 301
+]], "no larger than 300",
+    },
+    {
+      [[
+[telegram]
+token = "1:a"
 chat_id = "1"
 [telegram]
 token = "2:b"

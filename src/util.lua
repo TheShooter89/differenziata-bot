@@ -57,13 +57,28 @@ function M.read_file(path)
   return text
 end
 
+-- Write-then-rename: a crash mid-write leaves the old file intact instead of a
+-- truncated one. For state.tsv that is the difference between a duplicate
+-- reminder and a lost sent-record.
 function M.write_file(path, text)
-  local handle, open_error = io.open(path, "wb")
+  local tmp = path .. ".tmp"
+  local handle, open_error = io.open(tmp, "wb")
   if not handle then
-    return nil, string.format("cannot write %s: %s", path, open_error)
+    return nil, string.format("cannot write %s: %s", tmp, open_error)
   end
-  handle:write(text)
+  local ok, write_error = handle:write(text)
+  if not ok then
+    handle:close()
+    os.remove(tmp)
+    return nil, string.format("cannot write %s: %s", tmp, write_error)
+  end
+  handle:flush()
   handle:close()
+  local renamed, rename_error = os.rename(tmp, path)
+  if not renamed then
+    os.remove(tmp)
+    return nil, string.format("cannot replace %s: %s", path, rename_error)
+  end
   return true
 end
 

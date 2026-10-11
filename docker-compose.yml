@@ -1,0 +1,24 @@
+services:
+  differenziata-bot:
+    build: .
+    container_name: differenziata-bot
+    restart: unless-stopped
+    environment:
+      # Credentials are read from the .env file in this directory by compose
+      # for variable substitution, then written to a container .env by the
+      # entrypoint so cron jobs can see them. You can also mount a .env file
+      # instead (see volumes below).
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TZ=${TZ:-Europe/Rome}
+    volumes:
+      # Mount your own config and calendar, or leave these commented to use
+      # the example config and the shipped schedule.csv.
+      # - ./config.toml:/app/config.toml:ro
+      # - ./schedule.csv:/app/schedule.csv:ro
+
+      # Persist reminder state and poll offset across restarts.
+      - ./var:/app/var
+
+      # Optional: keep the container timezone in sync with the host.
+      # - /etc/localtime:/etc/localtime:ro

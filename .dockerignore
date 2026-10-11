@@ -1,0 +1,19 @@
+.git
+.opencode
+graphify-out
+
+# Secrets and local state
+.env
+.env.bak
+config.toml
+config.toml.bak
+var
+
+# Lua package artifacts
+*.rock
+*.src.rock
+
+# Editors and OS noise
+*.swp
+*~
+.DS_Store

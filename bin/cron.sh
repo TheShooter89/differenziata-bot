@@ -2,12 +2,12 @@
 # Manage the differenziata-bot crontab entry. Only the block between the markers
 # is ever touched, so other cron jobs in the same crontab are left alone.
 #
-#   cron.sh add      install the entry (fails if already installed)
-#   cron.sh remove   delete the entry
-#   cron.sh start    enable the entry (uncomment it)
-#   cron.sh stop     disable the entry (comment it out)
-#   cron.sh status   show installation state, schedule and recent log lines
-#   cron.sh refresh  rewrite the entry from config.toml, rotate the log
+#   cron.sh add      install the entries (fails if already installed)
+#   cron.sh remove   delete the entries
+#   cron.sh start    enable the entries (uncomment them)
+#   cron.sh stop     disable the entries (comment them out)
+#   cron.sh status   show installation state, schedules and recent log lines
+#   cron.sh refresh  rewrite the entries from config.toml, rotate the log
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -71,29 +71,44 @@ config_file() {
   fi
 }
 
-# Reads cron.schedule from the [cron] table without tripping over other tables.
-read_schedule() {
-  local file=$1
+# Reads one key from one [table] without tripping over other tables: the
+# [cron] reminder schedule and the [commands] poll schedule live in different
+# tables and under different keys.
+read_value() {
+  local file=$1 table=$2 key=$3
   [ -f "$file" ] || return 1
-  awk '
+  awk -v wanted_table="$table" -v wanted_key="$key" '
     /^[[:space:]]*\[/ {
-      table = $0
-      gsub(/[[:space:]]/, "", table)
-      sub(/^\[/, "", table)
-      sub(/\]$/, "", table)
+      t = $0
+      gsub(/[[:space:]]/, "", t)
+      sub(/^\[/, "", t)
+      sub(/\]$/, "", t)
+      table = t
     }
-    table == "cron" && /^[[:space:]]*schedule[[:space:]]*=/ {
-      sub(/^[[:space:]]*schedule[[:space:]]*=[[:space:]]*/, "")
+    table == wanted_table && $0 ~ "^[[:space:]]*" wanted_key "[[:space:]]*=" {
+      sub("^[^=]*=[[:space:]]*", "")
       sub(/[[:space:]]*#.*$/, "")
       gsub(/"/, "")
       gsub(/\047/, "")
       gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-      print
       found = 1
+      print
       exit
     }
     END { if (!found) exit 1 }
   ' "$file"
+}
+
+# Reads a schedule from one [table]. The key differs by table: [cron] holds the
+# reminder schedule under `schedule`, [commands] the poller's under
+# `poll_schedule`, because the two describe different jobs.
+read_schedule() {
+  local file=$1 table=$2
+  local key=schedule
+  if [ "$table" = "commands" ]; then
+    key=poll_schedule
+  fi
+  read_value "$file" "$table" "$key"
 }
 
 validate_schedule() {
@@ -112,15 +127,30 @@ validate_schedule() {
   return 0
 }
 
+validate_poll_timeout() {
+  local value=$1
+  [ -n "$value" ] || return 1
+  [[ $value =~ ^[0-9]+$ ]] || return 1
+  return 0
+}
+
 command_line() {
   printf '%s %s >> %s 2>&1\n' "$SIGNATURE" "$ROOT/bin/differenziata-bot" "$LOG"
 }
 
+poll_command_line() {
+  printf '%s %s --poll --poll-timeout %s >> %s 2>&1\n' \
+    "$SIGNATURE" "$ROOT/bin/differenziata-bot" "${1:-0}" "$LOG"
+}
+
 render_block() {
-  local schedule=$1
+  local cron_schedule=$1
+  local poll_schedule=$2
+  local poll_timeout=$3
   printf '%s\n' "$BEGIN"
   printf '# managed by bin/cron.sh - edit config.toml then run: bin/cron.sh refresh\n'
-  command_line | sed "s|^|# schedule: ${schedule}\n|"
+  command_line | sed "s|^|# schedule: ${cron_schedule}\n|"
+  poll_command_line "$poll_timeout" | sed "s|^|# poll schedule: ${poll_schedule}\n|"
   printf '%s\n' "$END"
 }
 
@@ -132,7 +162,9 @@ read_crontab_to() {
 }
 
 install_block() {
-  local schedule=$1
+  local cron_schedule=$1
+  local poll_schedule=$2
+  local poll_timeout=$3
   mkdir -p "$VAR"
   local existing
   existing=$(mktemp)
@@ -140,7 +172,7 @@ install_block() {
   local tmp
   tmp=$(mktemp)
   strip_block < "$existing" > "$tmp"
-  { cat "$tmp"; echo; render_block "$schedule"; } | write_crontab
+  { cat "$tmp"; echo; render_block "$cron_schedule" "$poll_schedule" "$poll_timeout"; } | write_crontab
   rm -f "$tmp" "$existing"
 }
 
@@ -187,12 +219,17 @@ cmd_add() {
   if is_installed; then
     die "already installed; use 'cron.sh refresh' to update it or 'cron.sh remove' first"
   fi
-  local schedule
-  schedule=$(read_schedule "$(config_file)") || die "no cron.schedule found in $(config_file)"
-  validate_schedule "$schedule" || die "cron.schedule is not a valid 5-field cron expression: $schedule"
+  local cron_schedule poll_schedule poll_timeout
+  cron_schedule=$(read_schedule "$(config_file)" cron) || die "no cron.schedule found in $(config_file)"
+  validate_schedule "$cron_schedule" || die "cron.schedule is not a valid 5-field cron expression: $cron_schedule"
+  poll_schedule=$(read_schedule "$(config_file)" commands) || die "no commands.poll_schedule found in $(config_file)"
+  validate_schedule "$poll_schedule" || die "commands.poll_schedule is not a valid 5-field cron expression: $poll_schedule"
+  poll_timeout=$(read_value "$(config_file)" commands poll_timeout_seconds) || die "no commands.poll_timeout_seconds found in $(config_file)"
+  validate_poll_timeout "$poll_timeout" || die "commands.poll_timeout_seconds is not a non-negative whole number: $poll_timeout"
+  [ "$poll_timeout" -le 300 ] || die "commands.poll_timeout_seconds must be no larger than 300: $poll_timeout"
   backup_crontab
-  install_block "$schedule"
-  echo "cron.sh: installed '$schedule' (backup: $BACKUP)"
+  install_block "$cron_schedule" "$poll_schedule" "$poll_timeout"
+  echo "cron.sh: installed '$cron_schedule' and poll '$poll_schedule' (backup: $BACKUP)"
 }
 
 cmd_remove() {
@@ -226,9 +263,14 @@ cmd_stop() {
 }
 
 cmd_refresh() {
-  local schedule
-  schedule=$(read_schedule "$(config_file)") || die "no cron.schedule found in $(config_file)"
-  validate_schedule "$schedule" || die "cron.schedule is not a valid 5-field cron expression: $schedule"
+  local cron_schedule poll_schedule poll_timeout
+  cron_schedule=$(read_schedule "$(config_file)" cron) || die "no cron.schedule found in $(config_file)"
+  validate_schedule "$cron_schedule" || die "cron.schedule is not a valid 5-field cron expression: $cron_schedule"
+  poll_schedule=$(read_schedule "$(config_file)" commands) || die "no commands.poll_schedule found in $(config_file)"
+  validate_schedule "$poll_schedule" || die "commands.poll_schedule is not a valid 5-field cron expression: $poll_schedule"
+  poll_timeout=$(read_value "$(config_file)" commands poll_timeout_seconds) || die "no commands.poll_timeout_seconds found in $(config_file)"
+  validate_poll_timeout "$poll_timeout" || die "commands.poll_timeout_seconds is not a non-negative whole number: $poll_timeout"
+  [ "$poll_timeout" -le 300 ] || die "commands.poll_timeout_seconds must be no larger than 300: $poll_timeout"
   # install_block rewrites the block enabled, so remember whether the job was
   # stopped and restore that afterwards: refreshing must not re-enable a job the
   # user deliberately paused.
@@ -237,24 +279,28 @@ cmd_refresh() {
     was_enabled=true
   fi
   backup_crontab
-  install_block "$schedule"
+  install_block "$cron_schedule" "$poll_schedule" "$poll_timeout"
   if ! $was_enabled; then
     set_enabled disabled
   fi
   rotate_log
-  echo "cron.sh: refreshed to '$schedule'${was_enabled:+ (enabled)}${was_enabled:-(disabled)}"
+  echo "cron.sh: refreshed to '$cron_schedule' and poll '$poll_schedule'${was_enabled:+ (enabled)}${was_enabled:-(disabled)}"
 }
 
 cmd_status() {
-  local file config
+  local file config poll_config poll_timeout
   file=$(config_file || true)
-  config=$(read_schedule "$file" 2>/dev/null || echo "unavailable")
+  config=$(read_schedule "$file" cron 2>/dev/null || echo "unavailable")
+  poll_config=$(read_schedule "$file" commands 2>/dev/null || echo "unavailable")
+  poll_timeout=$(read_value "$file" commands poll_timeout_seconds 2>/dev/null || echo 0)
   if is_installed; then
     local state
     if is_enabled; then state="enabled"; else state="disabled"; fi
     printf 'installed : yes (%s)\n' "$state"
     printf 'schedule  : %s\n' "$config"
+    printf 'poll      : %s (timeout %s)\n' "$poll_config" "$poll_timeout"
     printf 'command   : %s\n' "$(command_line)"
+    printf 'poll command : %s\n' "$(poll_command_line "$poll_timeout")"
     printf 'log       : %s\n' "$LOG"
     echo "--- last 10 log lines ---"
     if [ -f "$LOG" ]; then

@@ -32,8 +32,23 @@ csv = "schedule.csv"
 [runtime]
 # Reminders already delivered, so a repeated cron run stays silent.
 state_file = "var/state.tsv"
+# How far the Telegram poll has read into the update stream, so an answered
+# command is never answered twice. Advanced only after its reply was sent.
+offset_file = "var/updates.offset"
 
 [cron]
 # Cron expression used by bin/cron.sh when installing the job. Run
 # `bin/cron.sh refresh` after changing it. Five fields, local time.
 schedule = "*/30 * * * *"
+
+[commands]
+# The bot also answers Telegram commands (/planning, /help), polled by a
+# second cron line that bin/cron.sh installs next to the reminder line.
+# poll_schedule is a five-field cron expression, local time.
+poll_schedule = "* * * * *"
+# How long each poll may wait for updates, in seconds. 0 returns at once;
+# 30-60 suits a quiet bot and saves idle work.
+poll_timeout_seconds = 0
+# Chat ids allowed to talk to the bot. Empty means "only the chat id in
+# .env / TELEGRAM_CHAT_ID". Group ids are negative numbers.
+allowed_chat_ids = []

@@ -19,10 +19,12 @@ sure each reminder is sent exactly once.
 make test                    # unit tests, no network
 make list                    # preview the next 21 days, needs no token
 make dry-run                 # report what would be sent right now
+make poll                    # answer Telegram commands once, needs a token
 bash tests/cron_lifecycle.sh # cron.sh lifecycle against a temp crontab
 bash tests/e2e.sh            # full send/dedupe flow against a stub API
 
 bin/differenziata-bot --dry-run --at 2026-10-04T11:35 --verbose
+bin/differenziata-bot --poll
 bin/cron.sh status
 ```
 
@@ -67,6 +69,15 @@ Do not break these; each one has a test that will catch it.
   Do not "simplify" this into a `require("socket.http")`.
 - **`isdst` is left unset** on `os.time` calls that resolve a reminder time.
   Forcing `isdst = false` shifts every reminder by an hour for half the year.
+- **The poll offset advances only after the reply was sent.** `var/updates.offset`
+  moves to `update_id + 1` only once every reply for that update went out, so a
+  failed send is retried on the next tick; losing a command is worse than
+  repeating one.
+- **The command path never reads or writes `state.tsv`.** That ledger belongs to
+  the reminder line alone; a poll that touched it would mark reminders dealt with
+  without sending them.
+- **Unauthorized chats are consumed silently.** Replying would confirm the bot's
+  presence to a stranger, and acking the update keeps it from being reprocessed.
 
 ## Layout and ownership
 
@@ -82,6 +93,9 @@ src/schedule.lua        pickup-day maths, CSV validation
 src/reminders.lua       due-time slots, message text
 src/state.lua           sent-reminder ledger (TSV)
 src/telegram.lua        Bot API over curl
+src/json.lua            strict JSON decoder for the getUpdates payload
+src/plan.lua            monthly plan renderer (pure)
+src/commands.lua        Telegram command dispatch (pure)
 src/config.lua          defaults, merging, validation
 src/init.lua            CLI and orchestration
 ```
@@ -130,9 +144,9 @@ Three suites, all runnable from the repo root with no setup:
 
 | suite | covers | network |
 | --- | --- | --- |
-| `lua tests/run.lua` | units: toml, dotenv, csv, date, schedule, reminders, state, config | none |
+| `lua tests/run.lua` | units: toml, dotenv, csv, json, date, schedule, reminders, state, config, plan, commands | none |
 | `bash tests/cron_lifecycle.sh` | `cron.sh` add/start/stop/refresh/remove | none |
-| `bash tests/e2e.sh` | real sends, dedupe, grace window, API errors, credential resolution | loopback only |
+| `bash tests/e2e.sh` | real sends, dedupe, grace window, API errors, credential resolution, command polling | loopback only |
 
 `tests/e2e.sh` spins up a Python HTTP stub and points `api_base` at it. It must
 keep using a fresh temp dir and must not reach the real API. `tests/run.lua`
@@ -177,3 +191,16 @@ Short imperative subject, matching the repo's own history. Only commit when the
 user asks. Check `git status` first — `.env`, `config.toml` and the contents of
 `var/` are ignored; only `var/.gitkeep` is tracked, so a fresh clone has the
 directory without shipping any state.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

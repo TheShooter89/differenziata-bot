@@ -13,10 +13,13 @@ local MODULES = {
   "test_toml",
   "test_dotenv",
   "test_csv",
+  "test_json",
   "test_schedule",
   "test_reminders",
   "test_state",
   "test_config",
+  "test_plan",
+  "test_commands",
 }
 
 local passed, failed = 0, 0

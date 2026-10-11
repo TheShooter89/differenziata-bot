@@ -14,6 +14,8 @@ No runtime dependencies: plain Lua 5.x and `curl`.
    reminders you want, at what times of day, and how many days before the pickup.
 3. A cron entry runs the bot every 30 minutes. Each run sends any reminder that
    has come due and has not been sent yet.
+4. A second cron entry runs `--poll` once a minute, so `/planning` and `/help`
+   get an answer without waiting for the next reminder.
 
 Three reminders the day before pickup, by default: late morning, afternoon and
 evening.
@@ -24,6 +26,36 @@ Lascia fuori entro stasera / domani mattina.
 - 📄 carta
 - 🧴 plastica e lattine
 ```
+
+## Telegram commands
+
+The bot also answers commands, so you can ask for the month's plan at any time
+instead of waiting for a reminder:
+
+```
+📅 Raccolte di Ottobre 2026
+lun 5 ott: 📄 carta, 💩️ umido
+mar 6 ott: 🧴 plastica e lattine
+mer 7 ott: 🍾 vetro
+...
+```
+
+| command | reply |
+| --- | --- |
+| `/planning` | the current month |
+| `/planning 2026-11` | a specific month |
+| `/planning prossimo` | the next month |
+| `/help` | the command list |
+
+Replies are plain text, so a name like `secco / non riciclabile` is never mangled
+by a markup parser, and a long plan is split across messages on line boundaries.
+Only the chat id in `.env` may talk to the bot unless you list more in
+`commands.allowed_chat_ids`; messages from any other chat are ignored silently.
+
+A second cron line polls for new commands once a minute. Each tick runs
+`bin/differenziata-bot --poll`, which reads new updates, answers them, and records
+how far it has read in `var/updates.offset`. The offset only moves after a reply
+was actually sent, so a failed send is retried on the next tick.
 
 ## Setup
 
@@ -52,12 +84,40 @@ Send yourself a test message, then install the cron job:
 
 ```sh
 make test-send
+make poll                         # answer any command you have queued
 make cron-add
 make cron-status
 ```
 
 The token never leaves the machine except in the request to Telegram, and it is
 redacted from the logs. `.env` is gitignored.
+
+## Docker
+
+Build once, then run any bot command in a container:
+
+```sh
+make docker-build
+make docker-dry-run
+make docker-test
+```
+
+To run the bot continuously, create `.env` with your credentials and start the
+container:
+
+```sh
+make docker-up
+make docker-down
+```
+
+`docker-compose.yml` mounts `./var` so `state.tsv` and `updates.offset` survive
+restarts. It expects `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID` from `.env` in the
+project directory (compose reads them for variable substitution). You can also
+mount your own `config.toml` and `schedule.csv` by uncommenting the volumes in
+`docker-compose.yml`.
+
+Set your timezone with `TZ`, e.g. `TZ=Europe/Rome make docker-up`. The default
+is `Europe/Rome`.
 
 ## Credentials
 
@@ -105,9 +165,15 @@ csv = "schedule.csv"
 
 [runtime]
 state_file = "var/state.tsv"     # which reminders were already dealt with
+offset_file = "var/updates.offset"  # how far the command poll has read
 
 [cron]
 schedule = "*/30 * * * *"        # used by bin/cron.sh
+
+[commands]
+poll_schedule = "* * * * *"      # how often the bot checks for commands
+poll_timeout_seconds = 0         # 0: return at once; 30-60 for a long poll
+allowed_chat_ids = []            # empty: only TELEGRAM_CHAT_ID may talk
 ```
 
 To keep the token off disk entirely, export it instead and leave `.env` out of
@@ -154,6 +220,8 @@ bin/differenziata-bot [options]
       --at TIME          pretend the current time is TIME (YYYY-MM-DDTHH:MM)
   -l, --list             print the upcoming calendar and exit
   -d, --days N           how many days to look ahead (default 14)
+      --poll             answer Telegram commands (/planning, /help) once and exit
+      --poll-timeout N   seconds a --poll may wait for updates (default 0: return at once)
       --test-send        send one test message and exit
       --config PATH      config file to use
   -v, --verbose          log every step
@@ -170,24 +238,27 @@ bin/differenziata-bot --dry-run --at 2026-10-04T11:35 --verbose
 ## Managing the cron job
 
 ```sh
-bin/cron.sh add       # install the entry (refuses if already installed)
+bin/cron.sh add       # install the entries (refuses if already installed)
 bin/cron.sh status    # installed? enabled? plus the last 10 log lines
-bin/cron.sh stop      # disable: comments the line out
-bin/cron.sh start     # enable: uncomments it
-bin/cron.sh refresh   # re-read cron.schedule, rotate the log
-bin/cron.sh remove    # delete the entry
+bin/cron.sh stop      # disable: comments the lines out
+bin/cron.sh start     # enable: uncomments them
+bin/cron.sh refresh   # re-read the schedules, rotate the log
+bin/cron.sh remove    # delete the entries
 ```
 
-`stop`/`start` are the pause/resume pair; neither loses the entry or its
-settings. The entry lives between marker comments and the script only ever
+`stop`/`start` are the pause/resume pair; neither loses the entries or their
+settings. The entries live between marker comments and the script only ever
 rewrites that block, so your other cron jobs are untouched. The previous crontab
 is copied to `var/crontab.backup` before any change.
 
+The managed block holds two lines: the reminder run and the command poll
+(`--poll`). After changing `cron.schedule`, `commands.poll_schedule` or
+`commands.poll_timeout_seconds`, run `bin/cron.sh refresh`. Installs made before
+the `/planning` command existed need that refresh too, since their block has no
+poll line yet. Note that `refresh` keeps the job stopped if you had stopped it.
+
 `status` exits `0` when the job is installed and enabled, `1` when installed but
 disabled, and `2` when not installed, so it is usable from a health check.
-
-After changing `cron.schedule`, run `bin/cron.sh refresh`. Note that `refresh`
-keeps the job stopped if you had stopped it.
 
 Runtime files:
 
@@ -196,6 +267,7 @@ Runtime files:
 | `var/cron.log` | stdout and stderr of every run |
 | `var/bot.lock` | `flock` file, so two runs never overlap |
 | `var/state.tsv` | reminders already dealt with, pruned after 90 days |
+| `var/updates.offset` | how far the command poll has read the update stream |
 
 ## Tests
 
@@ -205,9 +277,10 @@ bash tests/cron_lifecycle.sh # cron.sh against a throwaway crontab
 bash tests/e2e.sh            # the bot against a stub Telegram API
 ```
 
-`tests/e2e.sh` starts a local HTTP stub, so it exercises real sends, retries and
-deduplication without network access or your real token. `tests/cron_lifecycle.sh`
-sets `CRONTAB_FILE` to a temp file, so it never touches your real crontab.
+`tests/e2e.sh` starts a local HTTP stub, so it exercises real sends, retries,
+deduplication and command polling without network access or your real token.
+`tests/cron_lifecycle.sh` sets `CRONTAB_FILE` to a temp file, so it never touches
+your real crontab.
 
 ## Layout
 
@@ -225,6 +298,9 @@ src/schedule.lua        which days a given trash is collected
 src/reminders.lua       due-time computation and message text
 src/state.lua           sent-reminder ledger
 src/telegram.lua        Bot API over curl
+src/json.lua            strict JSON decoder for the getUpdates payload
+src/plan.lua            monthly plan renderer
+src/commands.lua        Telegram command dispatch
 src/util.lua            logging and small helpers
 ```
 

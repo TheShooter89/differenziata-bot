@@ -25,9 +25,15 @@ M.defaults = {
   },
   runtime = {
     state_file = "var/state.tsv",
+    offset_file = "var/updates.offset",
   },
   cron = {
     schedule = "*/30 * * * *",
+  },
+  commands = {
+    poll_schedule = "* * * * *",
+    poll_timeout_seconds = 0,
+    allowed_chat_ids = {},
   },
 }
 
@@ -98,6 +104,10 @@ local function validate(config, require_credentials)
     return nil, "telegram credentials still contain the REPLACE_WITH... placeholder "
       .. "from .env.example (edit " .. config.env_path .. ")"
   end
+  -- Negative ids are groups and channels; anything non-numeric is a typo.
+  if not tostring(telegram.chat_id):match("^%-?%d+$") then
+    return nil, "TELEGRAM_CHAT_ID must be a number"
+  end
   if not tostring(telegram.api_base):match("^https?://") then
     return nil, "telegram.api_base must start with http:// or https://"
   end
@@ -140,8 +150,46 @@ local function validate(config, require_credentials)
   if type(config.runtime.state_file) ~= "string" or config.runtime.state_file == "" then
     return nil, "runtime.state_file must be a path"
   end
-  if type(config.cron.schedule) ~= "string" or not config.cron.schedule:match("^%S+%s+%S+%s+%S+%s+%S+%s+%S+$") then
+  local function valid_cron(value)
+    return type(value) == "string"
+      and value:match("^%S+%s+%S+%s+%S+%s+%S+%s+%S+$") ~= nil
+  end
+  if not valid_cron(config.cron.schedule) then
     return nil, "cron.schedule must be exactly 5 whitespace-separated cron fields"
+  end
+
+  local commands = config.commands
+  if type(commands) ~= "table" then
+    return nil, "commands must be a table"
+  end
+  if not valid_cron(commands.poll_schedule) then
+    return nil, "commands.poll_schedule must be exactly 5 whitespace-separated cron fields"
+  end
+  if type(commands.poll_timeout_seconds) ~= "number"
+    or commands.poll_timeout_seconds < 0
+    or commands.poll_timeout_seconds % 1 ~= 0 then
+    return nil, "commands.poll_timeout_seconds must be a non-negative whole number"
+  end
+  -- A long poll must stay well inside the cron tick that spawned it.
+  if commands.poll_timeout_seconds > 300 then
+    return nil, "commands.poll_timeout_seconds must be no larger than 300"
+  end
+  if type(commands.allowed_chat_ids) ~= "table" then
+    return nil, "commands.allowed_chat_ids must be a list of chat ids"
+  end
+  if is_array(commands.allowed_chat_ids) then
+    for _, id in ipairs(commands.allowed_chat_ids) do
+      if type(id) ~= "number" then
+        return nil, "commands.allowed_chat_ids must hold chat ids (numbers)"
+      end
+    end
+  elseif next(commands.allowed_chat_ids) ~= nil then
+    -- An empty table means "only the configured chat id"; a non-empty
+    -- non-list is a mistake worth reporting.
+    return nil, "commands.allowed_chat_ids must be a list of chat ids"
+  end
+  if type(config.runtime.offset_file) ~= "string" or config.runtime.offset_file == "" then
+    return nil, "runtime.offset_file must be a path"
   end
   return true
 end
@@ -209,6 +257,7 @@ function M.load(path, root, options)
 
   config.calendar.csv = resolve(config.calendar.csv)
   config.runtime.state_file = resolve(config.runtime.state_file)
+  config.runtime.offset_file = resolve(config.runtime.offset_file)
   config.config_path = used
   config.root = root or base
 

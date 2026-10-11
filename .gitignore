@@ -10,6 +10,10 @@ config.toml.bak
 var/*
 !var/.gitkeep
 
+.omo/
+.opencode/
+graphify-out/
+
 # Editors and OS noise
 *.swp
 *~

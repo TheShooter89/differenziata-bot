@@ -5,6 +5,8 @@ local schedule = require("schedule")
 local reminders = require("reminders")
 local state_module = require("state")
 local telegram = require("telegram")
+local plan = require("plan")
+local commands = require("commands")
 
 local USAGE = [[
 differenziata-bot - reminds you which trash to leave out
@@ -16,6 +18,8 @@ Options:
       --at TIME          pretend the current time is TIME (YYYY-MM-DDTHH:MM)
   -l, --list             print the upcoming calendar and exit
   -d, --days N           how many days to look ahead (default 14)
+      --poll             answer Telegram commands (/planning, /help) once and exit
+      --poll-timeout N   seconds a --poll may wait for updates (default 0: return at once)
       --test-send        send one test message and exit
       --config PATH      config file (default config.toml, then config.example.toml)
   -v, --verbose          log every step
@@ -69,6 +73,8 @@ local function parse_options(argv)
   local options = {
     dry_run = false,
     list = false,
+    poll = false,
+    poll_timeout = nil,
     test_send = false,
     verbose = false,
     days = 14,
@@ -84,6 +90,13 @@ local function parse_options(argv)
       options.list = true
     elseif item == "--test-send" then
       options.test_send = true
+    elseif item == "--poll" then
+      options.poll = true
+    elseif item == "--poll-timeout" then
+      index = index + 1
+      options.poll_timeout = tonumber(argv[index])
+    elseif item:match("^%-%-poll-timeout=") then
+      options.poll_timeout = tonumber(item:match("^%-%-poll-timeout=(.+)$"))
     elseif item == "-v" or item == "--verbose" then
       options.verbose = true
     elseif item == "-h" or item == "--help" then
@@ -113,6 +126,9 @@ local function parse_options(argv)
   end
   if not options.days or options.days < 1 then
     fail("--days must be a positive number")
+  end
+  if options.poll_timeout and (options.poll_timeout < 0 or options.poll_timeout % 1 ~= 0) then
+    fail("--poll-timeout must be a non-negative whole number")
   end
   return options
 end
@@ -145,6 +161,92 @@ local function print_calendar(pickups, today_days, reminders_config)
     ))
     io.write(string.format("           reminders: %s\n", reminder_summary))
   end
+end
+
+-- One-shot command poll: fetch new updates, answer the allowed ones, then
+-- exit. This path never touches var/state.tsv, which belongs to the reminder
+-- line alone.
+local function run_poll(config, rows, options, now)
+  local offset = 0
+  local offset_text = util.read_file(config.runtime.offset_file)
+  if offset_text then
+    local trimmed = util.trim(offset_text)
+    if trimmed:match("^%d+$") then
+      offset = tonumber(trimmed) or 0
+      -- A corrupt or absurd offset would silently skip updates; refuse it.
+      if offset > 2 ^ 53 or offset ~= math.floor(offset) then
+        fail("var/updates.offset: expected a whole number of at most 53 digits")
+      end
+    end
+  end
+
+  -- An empty allowed_chat_ids means "only the configured chat id".
+  local allowed_chat_ids = {}
+  if config_module.is_array(config.commands.allowed_chat_ids) then
+    for _, id in ipairs(config.commands.allowed_chat_ids) do
+      allowed_chat_ids[#allowed_chat_ids + 1] = id
+    end
+  end
+  if #allowed_chat_ids == 0 then
+    allowed_chat_ids = { tonumber(config.telegram.chat_id) }
+  end
+
+  local today = os.date("*t", now)
+  local ctx = {
+    rows = rows,
+    today_days = date.to_days(today.year, today.month, today.day),
+    allowed_chat_ids = allowed_chat_ids,
+  }
+
+  local timeout = options.poll_timeout or config.commands.poll_timeout_seconds
+  util.log("polling for updates (offset %d, timeout %d)", offset, timeout)
+  local updates, updates_error = telegram.get_updates(config.telegram, offset, timeout, 100)
+  if not updates then
+    fail(updates_error)
+  end
+  util.debug("got %d update(s)", #updates)
+
+  local last_update_id = nil
+  for _, update in ipairs(updates) do
+    local reply = commands.dispatch(update, ctx)
+    if reply then
+      -- Reply to the chat that asked, not the configured one: a group command
+      -- must be answered in the group.
+      local message = update.message
+      local reply_chat_id = message and message.chat and message.chat.id or nil
+      for _, chunk in ipairs(plan.split(reply)) do
+        local sent, send_error = telegram.send_message(config.telegram, chunk, options.dry_run, reply_chat_id)
+        if not sent then
+          -- Deliberately before advancing the offset: a failed send must be
+          -- retried on the next tick, never dropped.
+          fail(send_error)
+        end
+      end
+    end
+    if type(update.update_id) == "number" then
+      last_update_id = update.update_id
+    end
+  end
+
+  if last_update_id ~= nil then
+    local new_offset = last_update_id + 1
+    -- A dry run reads the stream but must not consume it: the next real tick
+    -- has to see the same updates.
+    if options.dry_run then
+      util.log("offset %d -> %d would be written", offset, new_offset)
+    else
+      local dir = config.runtime.offset_file:match("^(.*)/[^/]*$")
+      if dir and dir ~= "" then
+        util.ensure_dir(dir)
+      end
+      local ok, write_error = util.write_file(config.runtime.offset_file, tostring(new_offset))
+      if not ok then
+        fail(write_error)
+      end
+      util.log("offset %d -> %d (%d update(s) processed)", offset, new_offset, #updates)
+    end
+  end
+  return 0
 end
 
 local function main(argv)
@@ -204,6 +306,10 @@ local function main(argv)
       print(message)
     end
     return 0
+  end
+
+  if options.poll then
+    return run_poll(config, rows, options, now)
   end
 
   local state = state_module.load(config.runtime.state_file)
